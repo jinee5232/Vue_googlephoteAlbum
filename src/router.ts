@@ -2,10 +2,12 @@ import { createRouter, createWebHistory } from "vue-router";
 import GoogleLogin from "./components/GoogleLogin2.vue";
 import HomePage from "./pages/index.vue";
 import ShowPage from "./pages/ShowPage.vue";
+import AlbumsPage from "./pages/AlbumsPage.vue";
 
 const routes = [
   { path: "/", name: "Login", component: GoogleLogin },
-  { path: "/home", name: "Home", component: HomePage }, // 啟用 props
+  { path: "/home", name: "Home", component: HomePage },
+  { path: "/albums", name: "Albums", component: AlbumsPage },
   {
     path: "/show/:albumId",
     name: "ShowPage",

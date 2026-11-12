@@ -1,6 +1,7 @@
 // Flickr OAuth 1.0a 簽章（只在 server 端使用，Secret 不會進到前端）
 // 文件：https://www.flickr.com/services/api/auth.oauth.html
 import crypto from "node:crypto";
+import fs from "node:fs";
 
 const REST_URL = "https://api.flickr.com/services/rest";
 const UPLOAD_URL = "https://up.flickr.com/services/upload/";
@@ -67,23 +68,45 @@ export const callFlickr = async (method, params, creds, httpMethod = "GET") => {
 };
 
 /**
- * 上傳一張照片，回傳 photo id
+ * 上傳一張照片或一支影片，回傳 photo id
  * 文件：https://www.flickr.com/services/api/upload.api.html
- * @param {{ buffer: Buffer, filename: string, mimeType: string }} file
+ * 檔案用串流方式送出（影片可能很大，不整個讀進記憶體）
+ * @param {{ filename: string, mimeType: string, buffer?: Buffer, path?: string, size?: number }} file
+ *   圖片傳 buffer；影片傳暫存檔的 path 與 size
  * @param {Record<string,string>} params 例如 title、is_public
  */
 export const uploadPhoto = async (file, params, creds) => {
   // 檔案本身不參與簽章，其他欄位都要
   const signed = signParams("POST", UPLOAD_URL, params, creds);
-  const form = new FormData();
-  for (const [k, v] of Object.entries(signed)) form.append(k, v);
-  form.append(
-    "photo",
-    new Blob([file.buffer], { type: file.mimeType }),
-    file.filename
-  );
+  const boundary = `----ouoyo${crypto.randomBytes(12).toString("hex")}`;
 
-  const res = await fetch(UPLOAD_URL, { method: "POST", body: form });
+  let head = "";
+  for (const [k, v] of Object.entries(signed)) {
+    head += `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`;
+  }
+  // 檔名只用英數字，避免中文檔名在 multipart 標頭出問題（標題另外用 title 參數）
+  const ext = (file.filename.match(/\.[A-Za-z0-9]+$/) || [""])[0];
+  head += `--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="upload${ext}"\r\nContent-Type: ${file.mimeType}\r\n\r\n`;
+  const headBuf = Buffer.from(head, "utf8");
+  const tailBuf = Buffer.from(`\r\n--${boundary}--\r\n`, "utf8");
+  const fileSize = file.buffer ? file.buffer.length : file.size;
+
+  async function* body() {
+    yield headBuf;
+    if (file.buffer) yield file.buffer;
+    else for await (const chunk of fs.createReadStream(file.path)) yield chunk;
+    yield tailBuf;
+  }
+
+  const res = await fetch(UPLOAD_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": `multipart/form-data; boundary=${boundary}`,
+      "Content-Length": String(headBuf.length + fileSize + tailBuf.length),
+    },
+    body: body(),
+    duplex: "half",
+  });
   const text = await res.text();
   const id = /<photoid>(\d+)<\/photoid>/.exec(text)?.[1];
   if (!id) {

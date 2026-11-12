@@ -1,11 +1,12 @@
 import "dotenv/config";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import multer from "multer";
 import heicConvert from "heic-convert";
-import { callFlickr, uploadPhoto } from "./flickrOAuth.js";
+import { callFlickr, uploadPhoto, signedUrl } from "./flickrOAuth.js";
 import { extractHeicExif, insertExifIntoJpeg } from "./heicExif.js";
 
 const app = express();
@@ -116,7 +117,7 @@ app.get("/api/albums", requireLogin, async (req, res) => {
           user_id: FLICKR_USER_ID,
           page: String(page),
           per_page: "500",
-          primary_photo_extras: "url_z,url_m",
+          primary_photo_extras: "url_z,url_m,url_l",
         },
         FLICKR
       );
@@ -127,6 +128,12 @@ app.get("/api/albums", requireLogin, async (req, res) => {
           title: set.title._content,
           photoCount: Number(set.photos) || 0,
           coverUrl: extras.url_z || extras.url_m || "",
+          // 首頁封面用較大的尺寸（url_l 1024px）
+          coverLargeUrl: extras.url_l || extras.url_z || extras.url_m || "",
+          coverWidth: Number(extras.width_l || extras.width_z || extras.width_m) || 1,
+          coverHeight: Number(extras.height_l || extras.height_z || extras.height_m) || 1,
+          description: set.description?._content || "",
+          createdAt: Number(set.date_create) * 1000 || 0,
         });
       }
       pages = Number(data.photosets.pages) || 1;
@@ -149,8 +156,8 @@ app.get("/api/albums/:id/photos", requireLogin, async (req, res) => {
         user_id: FLICKR_USER_ID,
         page: String(page),
         per_page: "50",
-        media: "photos",
-        extras: "url_m,url_z,url_l,url_k",
+        media: "all",
+        extras: "url_m,url_z,url_l,url_k,date_taken,media",
       },
       FLICKR
     );
@@ -167,6 +174,10 @@ app.get("/api/albums/:id/photos", requireLogin, async (req, res) => {
           largeUrl: p.url_k || p.url_l || thumbUrl,
           width: Number(p.width_z || p.width_m) || 1,
           height: Number(p.height_z || p.height_m) || 1,
+          // 拍攝日期（Flickr 從 EXIF 讀取，格式 "2026-11-12 14:09:59"）
+          dateTaken: p.datetakenunknown === "1" ? "" : p.datetaken || "",
+          // 影片的 url_* 是預覽圖，播放網址另外用 /api/videos/:id 取得
+          media: p.media === "video" ? "video" : "photo",
         };
       }),
     });
@@ -177,17 +188,52 @@ app.get("/api/albums/:id/photos", requireLogin, async (req, res) => {
 });
 
 // ---- 上傳與相簿管理 ----
-// 一次只收一張照片（前端逐張上傳，才能顯示進度），存在記憶體直接轉給 Flickr
+// 一次只收一個檔案（前端逐個上傳，才能顯示進度）。
+// 先存成暫存檔（影片可能很大，不放記憶體），處理完自動刪除。
+const MAX_IMAGE_MB = 100;
+const MAX_VIDEO_MB = 500;
 const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 },
-  // Windows 瀏覽器常把 HEIC 標成空白或 octet-stream，所以也用副檔名判斷
+  storage: multer.diskStorage({ destination: os.tmpdir() }),
+  limits: { fileSize: MAX_VIDEO_MB * 1024 * 1024 },
+  // Windows 瀏覽器常把 HEIC / MOV 標成空白或 octet-stream，所以也用副檔名判斷
   fileFilter: (req, file, cb) =>
-    cb(null, file.mimetype.startsWith("image/") || isHeic(file)),
+    cb(null, file.mimetype.startsWith("image/") || isHeic(file) || isVideo(file)),
 });
+
+// 請求結束時刪掉暫存檔
+const cleanupUpload = (req, res, next) => {
+  if (req.file?.path) {
+    res.on("close", () => fs.unlink(req.file.path, () => {}));
+  }
+  next();
+};
+
+// multer 的錯誤（例如檔案太大）轉成看得懂的訊息
+const handleUpload = (req, res, next) =>
+  upload.single("photo")(req, res, (err) => {
+    if (err?.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ error: `檔案太大，影片最大 ${MAX_VIDEO_MB}MB、照片最大 ${MAX_IMAGE_MB}MB` });
+    }
+    if (err) return res.status(400).json({ error: err.message });
+    cleanupUpload(req, res, next);
+  });
 
 const isHeic = (f) =>
   /^image\/hei[cf]/.test(f.mimetype) || /\.hei[cf]$/i.test(f.originalname);
+
+const VIDEO_TYPES = {
+  ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
+  ".mov": "video/quicktime",
+  ".avi": "video/x-msvideo",
+  ".3gp": "video/3gpp",
+  ".mpg": "video/mpeg",
+  ".mpeg": "video/mpeg",
+  ".ogv": "video/ogg",
+  ".wmv": "video/x-ms-wmv",
+};
+const extOf = (name) => (name.match(/\.[^.]+$/) || [""])[0].toLowerCase();
+const isVideo = (f) => f.mimetype.startsWith("video/") || extOf(f.originalname) in VIDEO_TYPES;
 
 // 用檔案內容（不是副檔名）判斷實際格式。
 // 很多 .heic 檔其實已經是 JPEG（例如從 iCloud、LINE 下載的），直接上傳即可。
@@ -207,6 +253,19 @@ const sniff = (buf) => {
 // Flickr 不支援 HEIC（iPhone 照片），先轉成 JPEG
 const fileOf = async (f) => {
   const filename = Buffer.from(f.originalname, "latin1").toString("utf8");
+
+  // 影片：不轉檔，直接從暫存檔串流給 Flickr
+  if (isVideo(f)) {
+    const mimeType = f.mimetype.startsWith("video/")
+      ? f.mimetype
+      : VIDEO_TYPES[extOf(filename)] || "video/mp4";
+    return { path: f.path, size: f.size, filename, mimeType };
+  }
+
+  if (f.size > MAX_IMAGE_MB * 1024 * 1024) {
+    throw new Error(`「${filename}」太大了，照片最大 ${MAX_IMAGE_MB}MB`);
+  }
+  f.buffer = await fs.promises.readFile(f.path);
   if (!isHeic(f)) return { buffer: f.buffer, filename, mimeType: f.mimetype };
 
   const type = sniff(f.buffer);
@@ -243,7 +302,7 @@ const fileOf = async (f) => {
   };
 };
 
-// 上傳的照片一律設成私密
+// 上傳的照片、影片一律設成私密
 const uploadPrivate = (file) =>
   uploadPhoto(
     file,
@@ -263,10 +322,10 @@ const sendError = (res, label, err) => {
 };
 
 // 建立相簿：Flickr 規定相簿一定要有封面照片，所以建立時要附第一張照片
-app.post("/api/albums", requireLogin, requireEditor, upload.single("photo"), async (req, res) => {
+app.post("/api/albums", requireLogin, requireEditor, handleUpload, async (req, res) => {
   const title = String(req.body.title || "").trim();
   if (!title) return res.status(400).json({ error: "請輸入相簿名稱" });
-  if (!req.file) return res.status(400).json({ error: "請至少選一張圖片" });
+  if (!req.file) return res.status(400).json({ error: "請至少選一張照片或影片" });
   try {
     const photoId = await uploadPrivate(await fileOf(req.file));
     const data = await callFlickr(
@@ -286,8 +345,8 @@ app.post("/api/albums", requireLogin, requireEditor, upload.single("photo"), asy
 });
 
 // 上傳照片到相簿
-app.post("/api/albums/:id/photos", requireLogin, requireEditor, upload.single("photo"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "請選擇圖片檔" });
+app.post("/api/albums/:id/photos", requireLogin, requireEditor, handleUpload, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "請選擇照片或影片" });
   try {
     const photoId = await uploadPrivate(await fileOf(req.file));
     await callFlickr(
@@ -299,6 +358,27 @@ app.post("/api/albums/:id/photos", requireLogin, requireEditor, upload.single("p
     res.json({ id: photoId });
   } catch (err) {
     sendError(res, "上傳失敗", err);
+  }
+});
+
+// 取得影片播放網址（Flickr 的 getSizes 會列出各種畫質的 MP4）
+const VIDEO_PREFERENCE = ["1080p", "720p", "HD MP4", "Site MP4", "360p", "Mobile MP4", "Video Original"];
+app.get("/api/videos/:id", requireLogin, async (req, res) => {
+  try {
+    const data = await callFlickr("flickr.photos.getSizes", { photo_id: req.params.id }, FLICKR);
+    const sizes = (data.sizes?.size || []).filter((s) => s.media === "video");
+    const best = VIDEO_PREFERENCE.map((label) => sizes.find((s) => s.label === label)).find(Boolean);
+    if (!best) {
+      return res.status(409).json({ error: "影片還在 Flickr 處理中，請過幾分鐘再試" });
+    }
+    // 私密影片的播放網址要用 OAuth 簽章開啟，Flickr 才會轉址到可播放的影片檔
+    // （直接開會被影片主機拒絕 403）。轉址後的網址本身帶有時效簽章，瀏覽器可直接播放。
+    const r = await fetch(signedUrl(best.source, {}, FLICKR), { redirect: "manual" });
+    const url = r.headers.get("location");
+    if (!url) throw new Error(`Flickr 沒有回傳影片網址（HTTP ${r.status}）`);
+    res.json({ url, width: Number(best.width) || 0, height: Number(best.height) || 0 });
+  } catch (err) {
+    sendError(res, "取得影片失敗", err);
   }
 });
 
@@ -343,4 +423,6 @@ if (fs.existsSync(distDir)) {
 }
 
 const PORT = Number(process.env.PORT) || 4000;
-app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+const server = app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+// 影片上傳可能超過 Node 預設的 5 分鐘，放寬到 30 分鐘
+server.requestTimeout = 30 * 60 * 1000;

@@ -6,6 +6,11 @@ export interface Album {
   title: string;
   photoCount: number;
   coverUrl: string;
+  coverLargeUrl: string;
+  coverWidth: number;
+  coverHeight: number;
+  description: string;
+  createdAt: number; // 毫秒
 }
 
 export interface Photo {
@@ -15,7 +20,21 @@ export interface Photo {
   largeUrl: string; // 放大用（最大 2048px）
   width: number;
   height: number;
+  dateTaken: string; // "2026-11-12 14:09:59"，未知時為空字串
+  media: "photo" | "video"; // 影片的 thumbUrl / largeUrl 是預覽圖
 }
+
+/** 取得影片播放網址 */
+export const getVideoUrl = async (
+  photoId: string
+): Promise<{ url: string; width: number; height: number }> =>
+  api(`/api/videos/${encodeURIComponent(photoId)}`);
+
+/** "2026-11-12 14:09:59" → "2026年11月12日" */
+export const formatDate = (s: string) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  return m ? `${m[1]}年${Number(m[2])}月${Number(m[3])}日` : "";
+};
 
 const api = async (path: string, init: RequestInit = {}) => {
   const token = sessionStorage.getItem("googleToken");
@@ -89,7 +108,7 @@ export const createAlbum = async (
     })
   ).id;
 
-/** 上傳一張照片到相簿（照片一律設為私密） */
+/** 上傳一張照片或一支影片到相簿（一律設為私密） */
 export const uploadToAlbum = (albumId: string, file: File) =>
   api(`/api/albums/${encodeURIComponent(albumId)}/photos`, {
     method: "POST",

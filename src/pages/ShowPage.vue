@@ -1,30 +1,37 @@
 <template>
-  <div class="bg-gray-100 min-h-screen">
-    <div class="p-6">
+  <div class="show-page min-h-screen">
+    <div class="show-page__inner">
       <div
         class="show-header flex flex-wrap items-center justify-between gap-3 mb-4 lg:w-4/5 lg:mx-auto"
       >
         <div class="flex items-center gap-3">
-          <router-link to="/home" class="text-blue-500 hover:underline">
-            ← 所有相簿
-          </router-link>
-          <h1 class="text-2xl font-bold">{{ albumTitle || "相簿照片" }}</h1>
+          <router-link to="/albums" class="show-back font-en">← Albums</router-link>
+          <h1 class="show-title">{{ albumTitle || "相簿照片" }}</h1>
         </div>
+        <div class="flex items-center gap-2">
+        <button
+          v-if="hasPhotos"
+          @click="startSlideshow(0)"
+          class="show-btn"
+        >
+          ▶ 幻燈片
+        </button>
         <label
           v-if="isEditor"
-          class="px-4 py-2 text-white rounded cursor-pointer"
-          :class="uploading ? 'bg-gray-400' : 'bg-blue-500 hover:bg-blue-600'"
+          class="show-btn show-btn--dark cursor-pointer"
+          :class="{ 'opacity-60': uploading }"
         >
-          {{ uploading ? `上傳中 ${uploadDone} / ${uploadTotal}…` : "＋ 上傳照片" }}
+          {{ uploading ? `上傳中 ${uploadDone} / ${uploadTotal}…` : "＋ 上傳照片／影片" }}
           <input
             type="file"
-            accept="image/*,.heic,.heif"
+            accept="image/*,video/*,.heic,.heif,.mov"
             multiple
             class="hidden"
             :disabled="uploading"
             @change="handleUpload"
           />
         </label>
+        </div>
       </div>
 
       <p v-if="errorMessage" class="text-center text-red-500">{{ errorMessage }}</p>
@@ -56,6 +63,7 @@
           >
             ✕
           </button>
+          <span v-if="item.media === 'video'" class="video-badge" aria-label="影片">▶</span>
           <img
             :src="item.thumbUrl"
             :alt="item.title"
@@ -71,38 +79,90 @@
         <p>載入中...</p>
       </div>
 
-      <div v-if="hasMore && !loading" class="text-center mt-4">
-        <button
-          @click="loadMore"
-          class="px-6 py-3 text-white bg-blue-500 rounded hover:bg-blue-600"
-        >
-          查看更多
-        </button>
-      </div>
+      <!-- 捲到這裡就自動載入下一批 -->
+      <div ref="sentinelRef" class="h-px"></div>
 
-      <!-- 放大查看：照片從縮圖的位置放大到畫面中央（FLIP 動畫） -->
+      <!-- 放大查看：照片從縮圖的位置放大到畫面中央（FLIP 動畫），可左右切換 -->
       <div
-        v-if="selectedItem"
-        class="fixed inset-0 z-50 flex items-center justify-center"
+        v-if="current"
+        class="fixed inset-0 z-50 flex items-center justify-center select-none"
+        data-lenis-prevent
         @click="closeModal"
+        @touchstart.passive="onTouchStart"
+        @touchend="onTouchEnd"
       >
         <div ref="backdropRef" class="absolute inset-0 bg-black bg-opacity-90"></div>
-        <img
+        <div
           ref="modalImgRef"
-          :src="modalSrc"
-          :alt="selectedItem.title"
           :style="modalSize"
-          class="relative rounded-lg shadow-2xl object-contain"
+          class="relative rounded-lg shadow-2xl overflow-hidden bg-black"
           @click.stop
-        />
-        <button
-          ref="closeBtnRef"
-          class="absolute top-4 right-4 text-white text-2xl w-10 h-10 rounded-full bg-white bg-opacity-10 hover:bg-opacity-30 flex items-center justify-center"
-          @click.stop="closeModal"
         >
-          ✕
-        </button>
+          <img :src="modalSrc" :alt="current.title" class="absolute inset-0 w-full h-full object-contain" />
+          <!-- 影片：預覽圖先顯示（動畫用），拿到播放網址後疊上播放器 -->
+          <video
+            v-if="videoSrc"
+            :src="videoSrc"
+            :poster="current.largeUrl"
+            class="absolute inset-0 w-full h-full bg-black"
+            controls
+            autoplay
+            playsinline
+            @touchstart.stop
+            @touchend.stop
+            @error="videoError = '無法播放這支影片，可能還在 Flickr 處理中，或 Flickr 不允許直接播放私密影片'"
+          ></video>
+          <div
+            v-if="current.media === 'video' && (videoLoading || videoError)"
+            class="absolute inset-0 flex items-center justify-center p-6 text-center text-white bg-black/50"
+          >
+            {{ videoError || "影片載入中…" }}
+          </div>
+        </div>
+
+        <!-- 介面元素（一起淡入淡出） -->
+        <div ref="chromeRef" class="absolute inset-0 pointer-events-none text-white">
+          <p class="absolute top-5 left-5 text-sm text-white/70">
+            {{ currentIndex + 1 }} / {{ mediaItems.length }}{{ hasMore ? "+" : "" }}
+          </p>
+          <div class="absolute top-4 right-4 flex gap-2 pointer-events-auto">
+            <button v-if="hasPhotos" class="lb-btn" title="幻燈片" @click.stop="startSlideshow(currentIndex)">⧉</button>
+            <button class="lb-btn" title="關閉（Esc）" @click.stop="closeModal">✕</button>
+          </div>
+          <button
+            v-if="currentIndex > 0"
+            class="lb-btn lb-nav left-2 md:left-6 pointer-events-auto"
+            title="上一張（←）"
+            @click.stop="go(-1)"
+          >
+            ‹
+          </button>
+          <button
+            v-if="currentIndex < mediaItems.length - 1 || hasMore"
+            class="lb-btn lb-nav right-2 md:right-6 pointer-events-auto"
+            title="下一張（→）"
+            @click.stop="go(1)"
+          >
+            ›
+          </button>
+          <div class="absolute bottom-4 left-0 right-0 text-center px-16">
+            <p class="font-semibold truncate">{{ current.title }}</p>
+            <p v-if="current.dateTaken" class="text-sm text-white/70">
+              <span v-if="current.media === 'video'">影片 ・ </span>
+              {{ formatDate(current.dateTaken) }}
+            </p>
+          </div>
+        </div>
       </div>
+
+      <SlideShow
+        v-if="slideshowStart !== null"
+        :photos="mediaItems"
+        :start="slideshowStart"
+        :has-more="hasMore"
+        :load-more="loadMore"
+        @close="onSlideshowClose"
+      />
     </div>
   </div>
 </template>
@@ -112,8 +172,12 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from "vue"
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { useRoute } from "vue-router";
+import SlideShow from "../components/SlideShow.vue";
+import { lockScroll, unlockScroll } from "../animation/smoothScroll";
 import {
+  formatDate,
   getAlbumPhotos,
+  getVideoUrl,
   uploadMany,
   removeFromAlbum,
   canEdit,
@@ -182,20 +246,25 @@ const revealNewPhotos = async () => {
 };
 
 // ---- 放大查看 ----
-const selectedItem = ref<MediaItem | null>(null);
+const currentIndex = ref(-1);
+const current = computed(() => mediaItems.value[currentIndex.value] ?? null);
 const modalSrc = ref("");
 const backdropRef = ref<HTMLElement>();
 const modalImgRef = ref<HTMLElement>();
-const closeBtnRef = ref<HTMLElement>();
-let sourceEl: HTMLElement | null = null;
+const chromeRef = ref<HTMLElement>();
+let sourceEl: HTMLElement | null = null; // 目前照片在格狀列表裡的元素
 let closing = false;
+let navigating = false;
+
+const thumbEl = (id: string) =>
+  document.querySelector<HTMLElement>(`.masonry-item[data-id="${id}"]`);
 
 // 依照片長寬比算出放大後的尺寸（先知道尺寸，動畫才能從縮圖精準放大）
 const modalSize = computed(() => {
-  const item = selectedItem.value;
+  const item = current.value;
   if (!item) return {};
-  const maxW = window.innerWidth * 0.92;
-  const maxH = window.innerHeight * 0.88;
+  const maxW = window.innerWidth * 0.86;
+  const maxH = window.innerHeight * 0.78;
   const scale = Math.min(maxW / item.width, maxH / item.height);
   return { width: `${item.width * scale}px`, height: `${item.height * scale}px` };
 });
@@ -208,20 +277,51 @@ const deltaTo = (from: DOMRect, to: DOMRect) => ({
   scaleY: to.height / from.height,
 });
 
+// ---- 影片 ----
+const videoSrc = ref("");
+const videoError = ref("");
+const videoLoading = ref(false);
+const hasPhotos = computed(() => mediaItems.value.some((p) => p.media !== "video"));
+
+const loadVideo = async (item: MediaItem) => {
+  videoSrc.value = "";
+  videoError.value = "";
+  if (item.media !== "video") return;
+  videoLoading.value = true;
+  try {
+    const video = await getVideoUrl(item.id);
+    if (current.value?.id === item.id) videoSrc.value = video.url;
+  } catch (error) {
+    if (current.value?.id === item.id) {
+      videoError.value = error instanceof Error ? error.message : "取得影片失敗";
+    }
+  } finally {
+    videoLoading.value = false;
+  }
+};
+
+// 先顯示已載入的縮圖，大圖在背景載入好再換上；影片另外取得播放網址
+const showPhoto = (item: MediaItem) => {
+  loadVideo(item);
+  modalSrc.value = item.thumbUrl;
+  const large = new Image();
+  large.onload = () => {
+    if (current.value?.id === item.id) modalSrc.value = item.largeUrl;
+  };
+  large.src = item.largeUrl;
+  // 順便預先載入前後兩張
+  for (const n of [mediaItems.value[currentIndex.value + 1], mediaItems.value[currentIndex.value - 1]]) {
+    if (n) new Image().src = n.largeUrl;
+  }
+};
+
 const openModal = async (item: MediaItem, event: MouseEvent) => {
   sourceEl = event.currentTarget as HTMLElement;
   closing = false;
-  modalSrc.value = item.thumbUrl; // 先用已載入的縮圖，動畫不用等大圖
-  selectedItem.value = item;
-  document.body.style.overflow = "hidden";
+  currentIndex.value = mediaItems.value.findIndex((p) => p.id === item.id);
+  showPhoto(item);
+  lockScroll();
   await nextTick();
-
-  // 大圖在背景載入，好了再換上
-  const large = new Image();
-  large.onload = () => {
-    if (selectedItem.value?.id === item.id) modalSrc.value = item.largeUrl;
-  };
-  large.src = item.largeUrl;
 
   const img = modalImgRef.value!;
   if (reduceMotion) return;
@@ -233,50 +333,152 @@ const openModal = async (item: MediaItem, event: MouseEvent) => {
     { x: 0, y: 0, scaleX: 1, scaleY: 1, borderRadius: 8, duration: 0.6, ease: "power3.inOut" }
   );
   gsap.fromTo(backdropRef.value!, { opacity: 0 }, { opacity: 1, duration: 0.5 });
-  gsap.fromTo(closeBtnRef.value!, { opacity: 0, scale: 0.5 }, { opacity: 1, scale: 1, delay: 0.4, duration: 0.3 });
+  gsap.fromTo(chromeRef.value!, { opacity: 0 }, { opacity: 1, delay: 0.4, duration: 0.3 });
+};
+
+// 切換上一張 / 下一張：目前的往一邊滑出，新的從另一邊滑入
+const go = async (dir: number) => {
+  if (navigating || closing || !current.value) return;
+  let target = currentIndex.value + dir;
+  if (target >= mediaItems.value.length && hasMore.value) await loadMore();
+  if (target < 0 || target >= mediaItems.value.length) return;
+  navigating = true;
+
+  const img = modalImgRef.value!;
+  const swap = async () => {
+    if (sourceEl) gsap.set(sourceEl, { opacity: 1 });
+    currentIndex.value = target;
+    showPhoto(mediaItems.value[target]);
+    await nextTick();
+    sourceEl = thumbEl(mediaItems.value[target].id);
+    if (sourceEl) gsap.set(sourceEl, { opacity: 0 });
+  };
+
+  if (reduceMotion) {
+    await swap();
+    navigating = false;
+    return;
+  }
+  gsap.to(img, {
+    x: -dir * 80,
+    opacity: 0,
+    duration: 0.2,
+    ease: "power2.in",
+    onComplete: () => {
+      swap().then(() => {
+        gsap.fromTo(
+          img,
+          { x: dir * 80, opacity: 0 },
+          {
+            x: 0,
+            opacity: 1,
+            duration: 0.35,
+            ease: "power3.out",
+            onComplete: () => {
+              navigating = false;
+            },
+          }
+        );
+      });
+    },
+  });
 };
 
 const finishClose = () => {
   if (sourceEl) gsap.set(sourceEl, { opacity: 1 });
-  selectedItem.value = null;
-  document.body.style.overflow = "";
+  currentIndex.value = -1;
+  unlockScroll();
   closing = false;
+  navigating = false;
 };
 
 const closeModal = () => {
-  if (!selectedItem.value || closing) return;
+  if (!current.value || closing) return;
   closing = true;
   const img = modalImgRef.value;
   // 縮圖可能已經捲出畫面，那就直接淡出
   const target = sourceEl?.getBoundingClientRect();
   const visible = target && target.bottom > 0 && target.top < window.innerHeight;
   if (reduceMotion || !img || !visible) {
-    gsap.to([img, backdropRef.value, closeBtnRef.value], {
+    gsap.to([img, backdropRef.value, chromeRef.value], {
       opacity: 0,
       duration: reduceMotion ? 0 : 0.3,
       onComplete: finishClose,
     });
     return;
   }
-  gsap.to(closeBtnRef.value!, { opacity: 0, duration: 0.15 });
+  gsap.to(chromeRef.value!, { opacity: 0, duration: 0.15 });
   gsap.to(backdropRef.value!, { opacity: 0, duration: 0.45 });
   gsap.to(img, {
     ...deltaTo(img.getBoundingClientRect(), target!),
+    opacity: 1,
     duration: 0.5,
     ease: "power3.inOut",
     onComplete: finishClose,
   });
 };
 
-// Esc 關閉
-const onKey = (e: KeyboardEvent) => e.key === "Escape" && closeModal();
+// 手機左右滑動切換
+let touchX = 0;
+const onTouchStart = (e: TouchEvent) => (touchX = e.touches[0].clientX);
+const onTouchEnd = (e: TouchEvent) => {
+  const dx = e.changedTouches[0].clientX - touchX;
+  if (Math.abs(dx) > 50) {
+    e.preventDefault(); // 避免滑動後又觸發點擊關閉
+    go(dx < 0 ? 1 : -1);
+  }
+};
+
+// 鍵盤：Esc 關閉、← → 切換
+const onKey = (e: KeyboardEvent) => {
+  if (!current.value) return;
+  if (e.key === "Escape") closeModal();
+  else if (e.key === "ArrowRight") go(1);
+  else if (e.key === "ArrowLeft") go(-1);
+};
 onMounted(() => window.addEventListener("keydown", onKey));
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKey);
-  document.body.style.overflow = "";
+  unlockScroll();
 });
 
-const loadMore = async () => {
+// ---- 幻燈片 ----
+const slideshowStart = ref<number | null>(null);
+const startSlideshow = (index: number) => {
+  slideshowStart.value = Math.max(0, index);
+};
+// 關閉幻燈片時，如果大圖模式開著，就停在幻燈片最後看到的那張
+const onSlideshowClose = async (index: number) => {
+  slideshowStart.value = null;
+  await nextTick(); // 等幻燈片元件卸載（它會解除捲動鎖定）
+  if (current.value) lockScroll();
+  if (current.value && index !== currentIndex.value) {
+    if (sourceEl) gsap.set(sourceEl, { opacity: 1 });
+    currentIndex.value = index;
+    showPhoto(mediaItems.value[index]);
+    await nextTick();
+    sourceEl = thumbEl(mediaItems.value[index].id);
+    if (sourceEl) gsap.set(sourceEl, { opacity: 0 });
+  }
+};
+
+// ---- 捲到底自動載入 ----
+const sentinelRef = ref<HTMLElement>();
+let observer: IntersectionObserver | null = null;
+onMounted(() => {
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (entries[0].isIntersecting && hasMore.value && !loading.value) loadMore();
+    },
+    { rootMargin: "600px" } // 還差 600px 到底就先載入
+  );
+  if (sentinelRef.value) observer.observe(sentinelRef.value);
+});
+onBeforeUnmount(() => observer?.disconnect());
+
+let loadingPromise: Promise<void> | null = null;
+const loadMore = () => (loadingPromise ??= doLoadMore().finally(() => (loadingPromise = null)));
+const doLoadMore = async () => {
   loading.value = true;
   try {
     const result = await getAlbumPhotos(albumId, page + 1);
@@ -289,10 +491,11 @@ const loadMore = async () => {
     // 判斷是否還有更多照片
     hasMore.value = result.hasMore;
 
-    // 讓新加的照片出現在頁面底部
-    const loadMoreButton = document.getElementById("load-more-button");
-    if (loadMoreButton) {
-      loadMoreButton.scrollIntoView({ behavior: "smooth" });
+    // 載入後如果底部還在畫面內（照片太少填不滿），繼續載入
+    await nextTick();
+    const rect = sentinelRef.value?.getBoundingClientRect();
+    if (hasMore.value && rect && rect.top < window.innerHeight + 600) {
+      setTimeout(loadMore, 0);
     }
   } catch (error) {
     console.error("獲取照片失敗:", error);
@@ -378,6 +581,37 @@ watch(columns, revealNewPhotos);
 </script>
 
 <style scoped>
+.show-page__inner {
+  padding: calc(var(--header-height) + clamp(32px, 5vw, 64px)) clamp(16px, 4vw, 48px) 80px;
+}
+.show-back {
+  font-size: 0.75rem;
+  color: var(--color-primary);
+}
+.show-title {
+  font-size: clamp(1.5rem, 3vw, 2.5rem);
+  font-weight: 500;
+}
+.show-btn {
+  padding: 10px 22px;
+  border-radius: 999px;
+  border: 1px solid #d6d6d2;
+  background: #fff;
+  font-size: 0.875rem;
+  transition: background 0.3s, color 0.3s, border-color 0.3s;
+}
+.show-btn:hover {
+  border-color: var(--color-text);
+}
+.show-btn--dark {
+  background: var(--color-text);
+  border-color: var(--color-text);
+  color: #fff;
+}
+.show-btn--dark:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
 .masonry-container {
   display: flex;
   align-items: flex-start;
@@ -392,6 +626,45 @@ watch(columns, revealNewPhotos);
 }
 .masonry-item {
   width: 100%;
+}
+.lb-btn {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: white;
+  font-size: 1.25rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+.lb-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+.lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 2rem;
+}
+.video-badge {
+  position: absolute;
+  z-index: 5;
+  left: 10px;
+  bottom: 10px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-left: 2px;
+  pointer-events: none;
 }
 .masonry-item img {
   display: block;

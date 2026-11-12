@@ -2,5 +2,42 @@
 @tailwind components;
 @tailwind utilities;
 
+/* 全站配色與字型 */
 :root {
+  --color-text: #1a1a1a;
+  --color-muted: #6b6f75;
+  --color-bg: #ffffff;
+  --color-bg-soft: #f4f4f1;
+  --color-primary: #2f5d50; /* 深綠 */
+  --color-accent: #b9cbbd; /* 淺綠（封面圖形） */
+  --color-footer: #1f2221;
+  --header-height: 72px;
+  --font-ja: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans TC", sans-serif;
+  --font-en: "Poppins", sans-serif;
+  /* 顆粒質感（SVG 雜訊，不需要額外圖檔） */
+  --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.55'/%3E%3C/svg%3E");
+}
+
+html {
+  color: var(--color-text);
+  background: var(--color-bg);
+  font-family: var(--font-ja);
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-en {
+  font-family: var(--font-en);
+  letter-spacing: 0.08em;
+}
+
+/* Lenis 平滑捲動需要的設定 */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-stopped {
+  overflow: hidden;
 }
