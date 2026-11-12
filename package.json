@@ -1,0 +1,38 @@
+{
+  "name": "photogooglewebsite",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview",
+    "start": "node server.js",
+    "server": "node server.js",
+    "flickr-auth": "node scripts/flickr-auth.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "express": "^4.21.2",
+    "gsap": "^3.12.7",
+    "heic-convert": "^2.1.0",
+    "multer": "^2.5.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/tsconfig": "^0.7.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.5",
+    "vue-tsc": "^2.2.0",
+    "vue3-google-login": "^2.0.33"
+  },
+  "engines": {
+    "node": ">=18.17"
+  }
+}
